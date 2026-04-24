@@ -1,24 +1,48 @@
 // Philippine Tax Computation Engine
 
+// ========== AUTO CWT RATE ==========
+export function getAutoCWTRate(taxBase) {
+  if (!taxBase || taxBase <= 0) return { rate: 0, label: '0%', desc: 'No value' };
+  if (taxBase <= 500000) return { rate: 0.015, label: '1.5%', desc: '≤ ₱500,000' };
+  if (taxBase <= 2000000) return { rate: 0.03, label: '3.0%', desc: '₱500,001 – ₱2,000,000' };
+  return { rate: 0.05, label: '5.0%', desc: '> ₱2,000,000' };
+}
+
 // ========== SALE OF REAL PROPERTY ==========
 export function computeSaleRealProperty(data) {
-  const { sellingPrice = 0, fairMarketValue = 0, area = 0, zonalValue = 0, isTradeOrBusiness = false, hasImprovement = false, improvementAmount = 0 } = data;
-  
+  const {
+    sellingPrice = 0,
+    fairMarketValue = 0,
+    area = 0,
+    zonalValue = 0,
+    isTradeOrBusiness = false,
+    isVATRegistered = false,
+    hasImprovement = false,
+    improvementAmount = 0,
+  } = data;
+
   const areaTimesZonal = area * zonalValue;
   const taxBase = Math.max(sellingPrice, fairMarketValue, areaTimesZonal) + (hasImprovement ? improvementAmount : 0);
-  
+
   if (isTradeOrBusiness) {
-    const cwt = taxBase * 0.06;
-    const vat = sellingPrice * 0.12; // Always apply VAT for trade/business
+    // Auto CWT rate based on taxable base
+    const cwtInfo = getAutoCWTRate(taxBase);
+    const cwt = taxBase * cwtInfo.rate;
+    // VAT only if VAT-registered (gross receipts >= P3M)
+    const vat = isVATRegistered ? sellingPrice * 0.12 : 0;
     const dst = taxBase * 0.015;
     const transferTax = taxBase * 0.0075;
-    
+
     return {
       taxBase,
       sellingPrice,
       fairMarketValue,
       areaTimesZonal,
       isTradeOrBusiness: true,
+      isVATRegistered,
+      cwtRate: cwtInfo.rate,
+      cwtLabel: cwtInfo.label,
+      cwtDesc: cwtInfo.desc,
       cwt,
       vat,
       dst,
@@ -26,18 +50,18 @@ export function computeSaleRealProperty(data) {
       totalTax: cwt + vat + dst + transferTax,
       breakdown: [
         { label: 'Tax Base (Highest Value)', value: taxBase },
-        { label: 'Creditable Withholding Tax (CWT) 6%', value: cwt },
-        { label: 'Value Added Tax (VAT) 12%', value: vat },
+        { label: `Creditable Withholding Tax (CWT) ${cwtInfo.label} — ${cwtInfo.desc}`, value: cwt },
+        ...(isVATRegistered ? [{ label: 'Value Added Tax (VAT) 12% (VAT Registered)', value: vat }] : []),
         { label: 'Documentary Stamp Tax (DST) 1.5%', value: dst },
         { label: 'Transfer Tax 0.75%', value: transferTax },
-      ]
+      ],
     };
   }
-  
+
   const cgt = taxBase * 0.06;
   const dst = taxBase * 0.015;
   const transferTax = taxBase * 0.0075;
-  
+
   return {
     taxBase,
     sellingPrice,
@@ -53,21 +77,21 @@ export function computeSaleRealProperty(data) {
       { label: 'Capital Gains Tax (CGT) 6%', value: cgt },
       { label: 'Documentary Stamp Tax (DST) 1.5%', value: dst },
       { label: 'Transfer Tax 0.75%', value: transferTax },
-    ]
+    ],
   };
 }
 
 // ========== DONATION OF REAL PROPERTY ==========
 export function computeDonationRealProperty(data) {
   const { fairMarketValue = 0, area = 0, zonalValue = 0, hasImprovement = false, improvementAmount = 0 } = data;
-  
+
   const areaTimesZonal = area * zonalValue;
   const taxBase = Math.max(fairMarketValue, areaTimesZonal) + (hasImprovement ? improvementAmount : 0);
   const netGift = Math.max(taxBase - 250000, 0);
   const donorsTax = netGift * 0.06;
   const dst = taxBase * 0.015;
   const transferTax = taxBase * 0.0075;
-  
+
   return {
     taxBase,
     fairMarketValue,
@@ -85,17 +109,17 @@ export function computeDonationRealProperty(data) {
       { label: "Donor's Tax 6%", value: donorsTax },
       { label: 'Documentary Stamp Tax (DST) 1.5%', value: dst },
       { label: 'Transfer Tax 0.75%', value: transferTax },
-    ]
+    ],
   };
 }
 
 // ========== SALE OF STOCKS - LISTED ==========
 export function computeSaleStocksListed(data) {
   const { grossSalesValue = 0, isTradeOrBusiness = false, sellingPrice = 0 } = data;
-  
+
   const stt = grossSalesValue * 0.001;
   const vat = isTradeOrBusiness ? (sellingPrice || grossSalesValue) * 0.12 : 0;
-  
+
   return {
     grossSalesValue,
     stt,
@@ -107,20 +131,25 @@ export function computeSaleStocksListed(data) {
       { label: 'Stock Transaction Tax (STT) 0.1%', value: stt },
       ...(isTradeOrBusiness ? [{ label: 'Value Added Tax (VAT) 12%', value: vat }] : []),
       { label: 'DST', value: 0, note: 'Exempt (CMEPA)' },
-    ]
+    ],
   };
 }
 
 // ========== SALE OF STOCKS - NON-LISTED ==========
 export function computeSaleStocksNonListed(data) {
-  const { numberOfShares = 0, shareholdersEquity = 0, outstandingCapitalShares = 0, sellingPrice = 0, acquisitionCost = 0 } = data;
-  
+  const {
+    numberOfShares = 0,
+    shareholdersEquity = 0,
+    outstandingCapitalShares = 0,
+    sellingPrice = 0,
+    acquisitionCost = 0,
+  } = data;
+
   const bvps = outstandingCapitalShares > 0 ? shareholdersEquity / outstandingCapitalShares : 0;
   const bookValue = bvps * numberOfShares;
   const results = { bvps, bookValue, numberOfShares, sellingPrice, acquisitionCost };
-  
+
   if (sellingPrice >= bvps) {
-    // Sale at Book Value or Higher - CGT Only
     const netGain = (sellingPrice - acquisitionCost) * numberOfShares;
     const cgt = netGain * 0.15;
     const vat = data.isTradeOrBusiness ? sellingPrice * numberOfShares * 0.12 : 0;
@@ -136,10 +165,9 @@ export function computeSaleStocksNonListed(data) {
         { label: 'Net Gain', value: netGain },
         { label: 'Capital Gains Tax (CGT) 15%', value: cgt },
         ...(data.isTradeOrBusiness ? [{ label: 'Value Added Tax (VAT) 12%', value: vat }] : []),
-      ]
+      ],
     };
   } else if (sellingPrice === 0) {
-    // Pure Donation - Donor's Tax Only
     const grossGift = bvps * numberOfShares;
     const taxableNetGift = Math.max(grossGift - 250000, 0);
     const donorsTax = taxableNetGift * 0.06;
@@ -156,10 +184,9 @@ export function computeSaleStocksNonListed(data) {
         { label: 'Less: Annual Exemption', value: 250000 },
         { label: 'Taxable Net Gift', value: taxableNetGift },
         { label: "Donor's Tax 6%", value: donorsTax },
-      ]
+      ],
     };
   } else {
-    // Sale at Less than Book Value - BOTH
     const cgt = (sellingPrice - acquisitionCost) * numberOfShares * 0.15;
     const deemedGift = (bvps - sellingPrice) * numberOfShares;
     const donorsTax = Math.max(deemedGift - 250000, 0) * 0.06;
@@ -178,7 +205,7 @@ export function computeSaleStocksNonListed(data) {
         { label: 'Deemed Gift (BVPS - SP) × Shares', value: deemedGift },
         { label: "Donor's Tax = (Deemed Gift - ₱250,000) × 6%", value: donorsTax },
         ...(data.isTradeOrBusiness ? [{ label: 'Value Added Tax (VAT) 12%', value: vat }] : []),
-      ]
+      ],
     };
   }
 }
@@ -189,19 +216,19 @@ export function computeEstateTax(data) {
   const deathDate = new Date(dateOfDeath);
   const trainLawDate = new Date('2018-01-01');
   const isTRAINLaw = deathDate >= trainLawDate;
-  
-  // Calculate Gross Estate from properties
+
   let grossEstate = 0;
   let familyHomeValue = 0;
   const propertyBreakdown = [];
-  
-  properties.forEach(prop => {
+
+  properties.forEach((prop) => {
     let propValue = 0;
     let propLabel = prop.description || prop.propertyType || 'Property';
+
     if (prop.propertyType === 'land' || prop.propertyType === 'condo' || prop.propertyType === 'building') {
       const areaZonal = (prop.area || 0) * (prop.zonalValue || 0);
       propValue = Math.max(prop.fairMarketValue || 0, areaZonal);
-      if (prop.hasImprovement) propValue += (prop.improvementAmount || 0);
+      if (prop.hasImprovement) propValue += prop.improvementAmount || 0;
       const typeLabel = prop.propertyType.charAt(0).toUpperCase() + prop.propertyType.slice(1);
       propLabel = prop.description ? `${typeLabel} — ${prop.description}` : typeLabel;
     } else if (prop.propertyType === 'stocks') {
@@ -226,7 +253,7 @@ export function computeEstateTax(data) {
     } else {
       propValue = prop.value || 0;
     }
-    
+
     propertyBreakdown.push({ label: propLabel, value: propValue, isProperty: true });
     grossEstate += propValue;
     if (prop.isFamilyHome) {
@@ -235,7 +262,7 @@ export function computeEstateTax(data) {
   });
 
   let standardDeduction, familyHomeDeductionMax, taxRate;
-  
+
   if (isTRAINLaw) {
     standardDeduction = 5000000;
     familyHomeDeductionMax = 10000000;
@@ -243,26 +270,25 @@ export function computeEstateTax(data) {
   } else {
     standardDeduction = 1000000;
     familyHomeDeductionMax = 1000000;
-    taxRate = null; // Progressive
+    taxRate = null;
   }
-  
+
   const familyHomeDeduction = Math.min(familyHomeValue, familyHomeDeductionMax);
-  // Standard deduction auto-applies when there is a family home (always applies under TRAIN)
   const totalDeductions = standardDeduction + familyHomeDeduction + ordinaryDeductions;
-  
+
   let netEstate = grossEstate - totalDeductions;
   if (isMarried) {
-    netEstate = netEstate * 0.5; // Remove conjugal share
+    netEstate = netEstate * 0.5;
   }
   netEstate = Math.max(netEstate, 0);
-  
+
   let estateTax;
   if (isTRAINLaw) {
     estateTax = netEstate * 0.06;
   } else {
     estateTax = computeProgressiveEstateTax(netEstate);
   }
-  
+
   return {
     isTRAINLaw,
     grossEstate,
@@ -283,12 +309,11 @@ export function computeEstateTax(data) {
       ...(isMarried ? [{ label: 'Less: Conjugal Share (50%)', value: (grossEstate - totalDeductions) * 0.5 }] : []),
       { label: 'Net Taxable Estate', value: netEstate },
       { label: isTRAINLaw ? 'Estate Tax 6% (TRAIN Law)' : 'Estate Tax (Progressive Rate)', value: estateTax },
-    ]
+    ],
   };
 }
 
 function computeProgressiveEstateTax(netEstate) {
-  // Pre-TRAIN Law progressive rates
   const brackets = [
     { min: 0, max: 200000, rate: 0, fixed: 0 },
     { min: 200000, max: 500000, rate: 0.05, fixed: 0 },
@@ -297,7 +322,7 @@ function computeProgressiveEstateTax(netEstate) {
     { min: 5000000, max: 10000000, rate: 0.15, fixed: 465000 },
     { min: 10000000, max: Infinity, rate: 0.20, fixed: 1215000 },
   ];
-  
+
   for (const bracket of brackets) {
     if (netEstate <= bracket.max) {
       return bracket.fixed + (netEstate - bracket.min) * bracket.rate;
