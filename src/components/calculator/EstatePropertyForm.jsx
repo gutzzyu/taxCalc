@@ -18,6 +18,14 @@ const PROPERTY_TYPES = [
   { id: 'vehicles', label: 'Vehicles', icon: Car },
 ];
 
+// Auto CWT rate based on taxable base value
+function getCWTRate(taxBase) {
+  if (!taxBase || taxBase <= 0) return null;
+  if (taxBase <= 500000) return { rate: 0.015, label: '1.5% (≤ ₱500,000)' };
+  if (taxBase <= 2000000) return { rate: 0.03, label: '3.0% (₱500,001 – ₱2,000,000)' };
+  return { rate: 0.05, label: '5.0% (> ₱2,000,000)' };
+}
+
 export default function EstatePropertyForm({ properties, onChange, hasFamilyHome, dateOfDeath }) {
   const addProperty = () => {
     onChange([...properties, { propertyType: '', isFamilyHome: false }]);
@@ -107,7 +115,7 @@ export default function EstatePropertyForm({ properties, onChange, hasFamilyHome
                       <Label htmlFor={`family-home-${index}`} className="text-xs cursor-pointer">🏠 Mark as Family Home (auto-applies ₱5M standard deduction)</Label>
                     </div>
 
-                    <EstateLandFields prop={prop} index={index} updateProperty={updateProperty} showImprovement={true} />
+                    <EstateLandFields prop={prop} index={index} updateProperty={updateProperty} showImprovement={true} showCWT={true} />
                   </>
                 )}
 
@@ -128,8 +136,7 @@ export default function EstatePropertyForm({ properties, onChange, hasFamilyHome
                       <Label htmlFor={`family-home-${index}`} className="text-xs cursor-pointer">🏠 Mark as Family Home (auto-applies ₱5M standard deduction)</Label>
                     </div>
 
-                    {/* Building/Condo: no improvement checkbox - the building itself is the improvement */}
-                    <EstateLandFields prop={prop} index={index} updateProperty={updateProperty} showImprovement={false} />
+                    <EstateLandFields prop={prop} index={index} updateProperty={updateProperty} showImprovement={false} showCWT={true} />
                   </>
                 )}
 
@@ -146,7 +153,6 @@ export default function EstatePropertyForm({ properties, onChange, hasFamilyHome
         ))}
       </AnimatePresence>
 
-      {/* Add button BELOW all property cards so user doesn't need to scroll up */}
       <Button
         variant="outline"
         className="w-full text-secondary border-secondary/30 hover:bg-secondary/10 border-dashed"
@@ -158,10 +164,12 @@ export default function EstatePropertyForm({ properties, onChange, hasFamilyHome
   );
 }
 
-function EstateLandFields({ prop, index, updateProperty, showImprovement }) {
+function EstateLandFields({ prop, index, updateProperty, showImprovement, showCWT }) {
   const areaZonal = (prop.area || 0) * (prop.zonalValue || 0);
   const fmvHigher = Math.max(prop.fairMarketValue || 0, areaZonal);
   const taxBase = fmvHigher + (showImprovement && prop.hasImprovement ? (prop.improvementAmount || 0) : 0);
+
+  const cwtInfo = showCWT ? getCWTRate(taxBase) : null;
 
   return (
     <div className="space-y-4">
@@ -195,7 +203,6 @@ function EstateLandFields({ prop, index, updateProperty, showImprovement }) {
         </div>
       </div>
 
-      {/* Only show improvement for LAND, not building/condo */}
       {showImprovement && (
         <div className="space-y-3 pt-1 border-t">
           <div className="flex items-center gap-2">
@@ -218,6 +225,21 @@ function EstateLandFields({ prop, index, updateProperty, showImprovement }) {
       <div className="p-2 bg-secondary/5 rounded text-xs text-muted-foreground">
         <strong>Computed FMV = {formatCurrency(taxBase)}</strong> (higher of FMV vs Area × Zonal{showImprovement && prop.hasImprovement ? ' + Improvement' : ''})
       </div>
+
+      {showCWT && taxBase > 0 && cwtInfo && (
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs space-y-1">
+          <div className="font-semibold text-amber-900">📋 Creditable Withholding Tax (CWT)</div>
+          <div className="text-amber-800">
+            Auto-computed rate: <strong>{cwtInfo.label}</strong>
+          </div>
+          <div className="text-amber-700">
+            CWT Amount: <strong>{formatCurrency(taxBase * cwtInfo.rate)}</strong>
+          </div>
+          <div className="text-amber-600 text-xs mt-1">
+            Based on BIR regulations: ≤₱500K → 1.5% | ₱500K–₱2M → 3.0% | &gt;₱2M → 5.0%
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -226,9 +248,60 @@ function EstateStockFields({ prop, index, updateProperty, dateOfDeath }) {
   const isListed = prop.stockListing === 'listed';
   const isNonListed = prop.stockListing === 'non-listed';
   const [pseError, setPseError] = useState('');
+  const [pseLookupLoading, setPseLookupLoading] = useState(false);
+
+  const GEMINI_API_KEY = 'AQ.Ab8RN6JxcFDJ3MWXlcSbStf5j5m8hOVzCtyyzr2YhxIL0ouEkg';
 
   const handlePSELookup = async () => {
-    setPseError('PSE lookup requires an internet API. Please enter the price manually.');
+    if (!prop.stockTicker) { setPseError('Please enter a stock ticker first.'); return; }
+    if (!dateOfDeath) { setPseError('Please enter the date of death first.'); return; }
+    setPseLookupLoading(true);
+    setPseError('');
+
+    try {
+      const prompt = `What was the closing price per share of ${prop.stockTicker} on the Philippine Stock Exchange (PSE) on ${dateOfDeath}? If that exact date was not a trading day, use the last available trading day before that date. Return only a valid JSON object with no markdown formatting, no backticks, no extra text. The JSON must have exactly these fields: price (number, closing price in PHP), date (string, actual trading date used in YYYY-MM-DD format), source (string, brief note about data source).`;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: 256,
+            },
+            tools: [{ googleSearch: {} }],
+          }),
+        }
+      );
+
+      const data = await response.json();
+      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+      // Strip markdown fences if present
+      const cleaned = rawText.replace(/```json|```/g, '').trim();
+      let result = null;
+      try {
+        result = JSON.parse(cleaned);
+      } catch {
+        // Try to extract JSON from text
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        if (match) result = JSON.parse(match[0]);
+      }
+
+      if (result?.price && result.price > 0) {
+        updateProperty(index, 'marketPriceAtDeath', result.price);
+        setPseError(`✅ Price retrieved for ${result.date}: ₱${Number(result.price).toFixed(2)} — ${result.source}`);
+      } else {
+        setPseError('Could not retrieve price. Please enter manually.');
+      }
+    } catch (err) {
+      setPseError('Lookup failed. Please enter the price manually.');
+    }
+
+    setPseLookupLoading(false);
   };
 
   let computedValue = 0;
@@ -292,12 +365,17 @@ function EstateStockFields({ prop, index, updateProperty, dateOfDeath }) {
               <button
                 type="button"
                 onClick={handlePSELookup}
-                className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 whitespace-nowrap"
+                disabled={pseLookupLoading}
+                className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 whitespace-nowrap disabled:opacity-60"
               >
-                🔍 PSE Lookup
+                {pseLookupLoading ? '⏳ Loading...' : '🔍 PSE Lookup'}
               </button>
             </div>
-            {pseError && <p className="text-xs mt-1 text-destructive">{pseError}</p>}
+            {pseError && (
+              <p className={`text-xs mt-1 ${pseError.startsWith('✅') ? 'text-green-700' : 'text-destructive'}`}>
+                {pseError}
+              </p>
+            )}
           </div>
           <div className="p-2 bg-secondary/10 rounded text-xs">
             <strong>FMV = Market Price × Shares = {formatCurrency(computedValue)}</strong>
