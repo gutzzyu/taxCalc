@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -6,6 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { TrendingUp, Info } from 'lucide-react';
 import { StaggerChild } from './AnimatedSection';
 import AnimatedSection from './AnimatedSection';
+
+const GEMINI_API_KEY = 'AQ.Ab8RN6JxcFDJ3MWXlcSbStf5j5m8hOVzCtyyzr2YhxIL0ouEkg';
 
 export default function StocksForm({ data, onChange }) {
   const update = (field, value) => onChange({ ...data, [field]: value });
@@ -41,28 +43,81 @@ export default function StocksForm({ data, onChange }) {
             id="isTradeOrBusiness"
             checked={data.isTradeOrBusiness || false}
             onChange={(e) => update('isTradeOrBusiness', e.target.checked)}
-            className="w-4 h-4" />
-          
+            className="w-4 h-4"
+          />
           <label htmlFor="isTradeOrBusiness" className="text-sm font-medium cursor-pointer">
             Used in Trade or Business (VAT will apply)
           </label>
         </div>
       </StaggerChild>
 
-      {stockType &&
-      <AnimatedSection keyProp={stockType}>
-          {stockType === 'listed' ?
-        <ListedStockFields data={data} update={update} /> :
-
-        <NonListedStockFields data={data} update={update} />
-        }
+      {stockType && (
+        <AnimatedSection keyProp={stockType}>
+          {stockType === 'listed' ? (
+            <ListedStockFields data={data} update={update} />
+          ) : (
+            <NonListedStockFields data={data} update={update} />
+          )}
         </AnimatedSection>
-      }
-    </div>);
-
+      )}
+    </div>
+  );
 }
 
 function ListedStockFields({ data, update }) {
+  const [pseLoading, setPseLoading] = useState(false);
+  const [pseMsg, setPseMsg] = useState('');
+
+  const handlePSELookup = async () => {
+    if (!data?.tickerSymbol) { setPseMsg('Please enter a stock ticker first.'); return; }
+    if (!data?.tradeDate) { setPseMsg('Please enter a transaction date first.'); return; }
+    setPseLoading(true);
+    setPseMsg('');
+
+    try {
+      const prompt = `What was the closing price per share of ${data.tickerSymbol} on the Philippine Stock Exchange (PSE) on ${data.tradeDate}? If that exact date was not a trading day, use the last available trading day before that date. Return only a valid JSON object with no markdown formatting, no backticks, no extra text. The JSON must have exactly these fields: price (number, closing price in PHP), date (string, actual trading date used in YYYY-MM-DD format), source (string, brief note about data source).`;
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 256 },
+            tools: [{ googleSearch: {} }],
+          }),
+        }
+      );
+
+      const responseData = await response.json();
+      const rawText = responseData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const cleaned = rawText.replace(/```json|```/g, '').trim();
+
+      let result = null;
+      try {
+        result = JSON.parse(cleaned);
+      } catch {
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        if (match) result = JSON.parse(match[0]);
+      }
+
+      if (result?.price && result.price > 0) {
+        // Compute gross sales value automatically
+        const grossSales = result.price * (data.numberOfShares || 0);
+        update('sellingPrice', result.price);
+        update('grossSalesValue', grossSales);
+        setPseMsg(`✅ ${data.tickerSymbol} on ${result.date}: ₱${Number(result.price).toFixed(2)}/share — ${result.source}`);
+      } else {
+        setPseMsg('Could not retrieve price. Please enter manually.');
+      }
+    } catch {
+      setPseMsg('Lookup failed. Please enter the price manually.');
+    }
+
+    setPseLoading(false);
+  };
+
   return (
     <Card className="border-2 border-border/50 shadow-sm">
       <CardHeader className="pb-3">
@@ -79,7 +134,7 @@ function ListedStockFields({ data, update }) {
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs text-muted-foreground">Stock Ticker</Label>
-            <Input placeholder="e.g., GLO, TEL" value={data?.tickerSymbol || ''} onChange={(e) => update('tickerSymbol', e.target.value)} />
+            <Input placeholder="e.g., GLO, TEL" value={data?.tickerSymbol || ''} onChange={(e) => update('tickerSymbol', e.target.value.toUpperCase())} />
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs text-muted-foreground">Transaction Date</Label>
@@ -94,7 +149,31 @@ function ListedStockFields({ data, update }) {
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs text-muted-foreground">Selling Price per Share (₱)</Label>
-            <Input type="number" placeholder="0.00" value={data?.sellingPrice || ''} onChange={(e) => update('sellingPrice', parseFloat(e.target.value) || 0)} />
+            <div className="flex gap-2">
+              <Input
+                type="number"
+                placeholder="0.00"
+                value={data?.sellingPrice || ''}
+                onChange={(e) => {
+                  const price = parseFloat(e.target.value) || 0;
+                  update('sellingPrice', price);
+                  update('grossSalesValue', price * (data?.numberOfShares || 0));
+                }}
+              />
+              <button
+                type="button"
+                onClick={handlePSELookup}
+                disabled={pseLoading}
+                className="px-3 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 whitespace-nowrap disabled:opacity-60"
+              >
+                {pseLoading ? '⏳ Loading...' : '🔍 PSE'}
+              </button>
+            </div>
+            {pseMsg && (
+              <p className={`text-xs mt-1 ${pseMsg.startsWith('✅') ? 'text-green-700' : 'text-destructive'}`}>
+                {pseMsg}
+              </p>
+            )}
           </div>
         </div>
 
@@ -105,8 +184,8 @@ function ListedStockFields({ data, update }) {
             placeholder="0.00"
             value={data?.grossSalesValue || ''}
             onChange={(e) => update('grossSalesValue', parseFloat(e.target.value) || 0)}
-            className="font-semibold" />
-          
+            className="font-semibold"
+          />
         </div>
 
         <div className="flex items-start gap-2 p-3 bg-secondary/5 rounded-lg border border-secondary/20">
@@ -116,12 +195,14 @@ function ListedStockFields({ data, update }) {
           </p>
         </div>
       </CardContent>
-    </Card>);
-
+    </Card>
+  );
 }
 
 function NonListedStockFields({ data, update }) {
-  const bvps = data?.outstandingCapitalShares > 0 ? (data.shareholdersEquity / data.outstandingCapitalShares).toFixed(2) : '0.00';
+  const bvps = data?.outstandingCapitalShares > 0
+    ? (data.shareholdersEquity / data.outstandingCapitalShares).toFixed(2)
+    : '0.00';
 
   return (
     <Card className="border-2 border-border/50 shadow-sm">
@@ -163,12 +244,8 @@ function NonListedStockFields({ data, update }) {
             <Label className="text-xs text-muted-foreground">Agreed Transfer Price per Share (₱)</Label>
             <Input type="number" placeholder="0.00" value={data?.sellingPrice || ''} onChange={(e) => update('sellingPrice', parseFloat(e.target.value) || 0)} />
           </div>
-          
-
-
-          
         </div>
       </CardContent>
-    </Card>);
-
+    </Card>
+  );
 }
